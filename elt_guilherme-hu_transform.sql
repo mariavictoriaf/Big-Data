@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS staging.stg_rejeitos_etl (
     nk_frota_origem VARCHAR(30),
     nk_id_registro  INT,
     motivo_rejeito  VARCHAR(500) NOT NULL,
-    dados_json      TEXT,        -- snapshot do registro rejeitado
+    dados_json      TEXT,
     dt_rejeito      DATETIME     NOT NULL DEFAULT NOW()
 );
 
@@ -56,11 +56,11 @@ CREATE TABLE IF NOT EXISTS staging.stg_conf_veiculo (
     nk_frota_origem       VARCHAR(30)  NOT NULL,
     nk_id_veiculo         INT          NOT NULL,
     nk_id_grupo           INT          NOT NULL,
-    nk_id_patio_origem    INT          NOT NULL,
+    nk_id_patio_origem    INT,
     placa                 VARCHAR(10)  NOT NULL,
     marca                 VARCHAR(50)  NOT NULL,
     modelo                VARCHAR(60)  NOT NULL,
-    mecanizacao           VARCHAR(20)  NOT NULL, 
+    mecanizacao           VARCHAR(20)  NOT NULL,
     tem_ar_condicionado   TINYINT(1)   NOT NULL,
     PRIMARY KEY (nk_frota_origem, nk_id_veiculo)
 );
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS staging.stg_conf_veiculo (
 CREATE TABLE IF NOT EXISTS staging.stg_conf_cliente (
     nk_frota_origem       VARCHAR(30)  NOT NULL,
     nk_id_cliente         INT          NOT NULL,
-    tipo_cliente          VARCHAR(2)   NOT NULL, 
+    tipo_cliente          VARCHAR(2)   NOT NULL,
     nome                  VARCHAR(150) NOT NULL,
     end_cidade            VARCHAR(100),
     end_uf                VARCHAR(100),
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS staging.stg_conf_reserva (
     data_devolucao_prevista   DATE          NOT NULL,
     duracao_prevista_dias     INT           NOT NULL,
     valor_previsto_reserva    DECIMAL(12,2) NOT NULL,
-    status_reserva            VARCHAR(30)   NOT NULL,
+    status_reserva            VARCHAR(100)  NOT NULL,
     PRIMARY KEY (nk_frota_origem, nk_id_reserva)
 );
 
@@ -99,10 +99,10 @@ CREATE TABLE IF NOT EXISTS staging.stg_conf_locacao (
     nk_id_veiculo             INT           NOT NULL,
     nk_id_grupo               INT           NOT NULL,
     nk_id_patio_retirada      INT           NOT NULL,
-    nk_id_patio_devolucao     INT,          
+    nk_id_patio_devolucao     INT,
     data_retirada             DATE          NOT NULL,
     data_prev_devolucao       DATE          NOT NULL,
-    data_real_devolucao       DATE,         
+    data_real_devolucao       DATE,
     valor_final               DECIMAL(14,2) NOT NULL,
     PRIMARY KEY (nk_frota_origem, nk_id_locacao)
 );
@@ -151,7 +151,7 @@ BEGIN
 
     INSERT INTO staging.stg_conf_grupo (nk_frota_origem, nk_id_grupo, nome_grupo, valor_diaria)
     SELECT nk_frota_origem, nk_id_grupo,
-        CONCAT(UPPER(LEFT(TRIM(COALESCE(nome_grupo, codigo_grupo, CONCAT('GRUPO ', nk_id_grupo))), 1)), LOWER(SUBSTRING(TRIM(COALESCE(nome_grupo, codigo_grupo, CONCAT('GRUPO ', nk_id_grupo))), 2))),
+        CONCAT(UPPER(LEFT(TRIM(COALESCE(nome_grupo, CONCAT('GRUPO ', nk_id_grupo))), 1)), LOWER(SUBSTRING(TRIM(COALESCE(nome_grupo, CONCAT('GRUPO ', nk_id_grupo))), 2))),
         COALESCE(valor_diaria, 0)
     FROM staging.stg_guilherme_hu_grupo
     WHERE nk_frota_origem = 'guilherme-hu';
@@ -164,9 +164,9 @@ BEGIN
     DELETE FROM staging.stg_conf_veiculo WHERE nk_frota_origem = 'guilherme-hu';
 
     INSERT INTO staging.stg_rejeitos_etl (tabela_origem, nk_frota_origem, nk_id_registro, motivo_rejeito)
-    SELECT 'stg_guilherme_hu_veiculo', nk_frota_origem, nk_id_veiculo, 'Veículo sem nk_id_grupo ou sem nk_id_patio_origem'
+    SELECT 'stg_guilherme_hu_veiculo', nk_frota_origem, nk_id_veiculo, 'Veículo sem nk_id_grupo'
     FROM staging.stg_guilherme_hu_veiculo
-    WHERE nk_frota_origem = 'guilherme-hu' AND (nk_id_grupo IS NULL OR nk_id_patio_origem IS NULL);
+    WHERE nk_frota_origem = 'guilherme-hu' AND nk_id_grupo IS NULL;
 
     INSERT INTO staging.stg_conf_veiculo (nk_frota_origem, nk_id_veiculo, nk_id_grupo, nk_id_patio_origem, placa, marca, modelo, mecanizacao, tem_ar_condicionado)
     SELECT nk_frota_origem, nk_id_veiculo, nk_id_grupo, nk_id_patio_origem,
@@ -176,7 +176,7 @@ BEGIN
         CASE UPPER(TRIM(COALESCE(mecanizacao, ''))) WHEN 'MANUAL' THEN 'MANUAL' WHEN 'AUTOMATICO' THEN 'AUTOMATICO' ELSE 'NÃO INFORMADO' END,
         COALESCE(tem_ar_condicionado, FALSE)
     FROM staging.stg_guilherme_hu_veiculo
-    WHERE nk_frota_origem = 'guilherme-hu' AND nk_id_grupo IS NOT NULL AND nk_id_patio_origem IS NOT NULL;
+    WHERE nk_frota_origem = 'guilherme-hu' AND nk_id_grupo IS NOT NULL;
 END;
 
 -- 2.4) Cliente
@@ -355,7 +355,16 @@ DROP TRIGGER IF EXISTS staging.trg_transforma_guilherme_hu_reserva_ai//
 CREATE TRIGGER staging.trg_transforma_guilherme_hu_reserva_ai AFTER INSERT ON staging.stg_guilherme_hu_reserva FOR EACH ROW
 BEGIN
     IF NEW.nk_id_cliente IS NULL OR NEW.nk_id_grupo IS NULL OR NEW.nk_id_patio_retirada IS NULL OR NEW.nk_id_patio_fim IS NULL OR NEW.data_reserva IS NULL OR NEW.data_retirada_prevista IS NULL OR NEW.data_devolucao_prevista IS NULL OR NEW.data_devolucao_prevista <= NEW.data_retirada_prevista OR COALESCE(NEW.duracao_prevista_dias, 0) < 1 THEN
-        INSERT INTO staging.stg_rejeitos_etl (tabela_origem, nk_frota_origem, nk_id_registro, motivo_rejeito) VALUES ('stg_guilherme_hu_reserva', NEW.nk_frota_origem, NEW.nk_id_reserva, 'Reserva inválida');
+        INSERT INTO staging.stg_rejeitos_etl (tabela_origem, nk_frota_origem, nk_id_registro, motivo_rejeito)
+        VALUES ('stg_guilherme_hu_reserva', NEW.nk_frota_origem, NEW.nk_id_reserva,
+            CASE
+                WHEN NEW.nk_id_cliente IS NULL THEN 'Reserva sem cliente'
+                WHEN NEW.nk_id_grupo IS NULL THEN 'Reserva sem grupo'
+                WHEN NEW.data_retirada_prevista IS NULL OR NEW.data_devolucao_prevista IS NULL THEN 'Datas incompletas'
+                WHEN NEW.data_devolucao_prevista <= NEW.data_retirada_prevista THEN 'Data devolução <= data retirada'
+                WHEN COALESCE(NEW.duracao_prevista_dias, 0) < 1 THEN 'Duração inválida'
+                ELSE 'Erro desconhecido'
+            END);
     ELSE
         INSERT INTO staging.stg_conf_reserva (nk_frota_origem, nk_id_reserva, nk_id_cliente, nk_id_grupo, nk_id_patio_retirada, nk_id_patio_fim, data_reserva, data_retirada_prevista, data_devolucao_prevista, duracao_prevista_dias, valor_previsto_reserva, status_reserva)
         VALUES (NEW.nk_frota_origem, NEW.nk_id_reserva, NEW.nk_id_cliente, NEW.nk_id_grupo, NEW.nk_id_patio_retirada, NEW.nk_id_patio_fim, NEW.data_reserva, NEW.data_retirada_prevista, NEW.data_devolucao_prevista, DATEDIFF(NEW.data_devolucao_prevista, NEW.data_retirada_prevista), COALESCE(NEW.valor_previsto_reserva, 0), CASE UPPER(TRIM(COALESCE(NEW.status_reserva, ''))) WHEN 'ATIVA' THEN 'ATIVA' WHEN 'CANCELADA' THEN 'CANCELADA' WHEN 'CONVERTIDA' THEN 'CONVERTIDA' ELSE 'ATIVA' END)
